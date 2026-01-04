@@ -16,6 +16,8 @@ A computer vision-based feature extraction system for fashion recommendations, a
 pip install -r requirements.txt
 ```
 
+**Note:** The system will automatically download the required MediaPipe models (~50MB total) on first run. They will be cached in the `models/` directory.
+
 ## Project Structure
 
 ```
@@ -95,17 +97,18 @@ This will display:
 
 ## Dependencies
 
-- `mediapipe==0.10.9` - Pose estimation and face mesh
-- `opencv-python==4.8.1.78` - Image processing
-- `scikit-learn==1.3.2` - K-Means clustering
-- `matplotlib==3.8.2` - Visualization
-- `numpy==1.26.2` - Numerical operations
+- `mediapipe>=0.10.30` - Pose estimation and face mesh (uses new Tasks API)
+- `opencv-python>=4.8.0` - Image processing
+- `scikit-learn>=1.3.0` - K-Means clustering
+- `matplotlib>=3.8.0` - Visualization
+- `numpy>=1.24.0` - Numerical operations
 
 ## Configuration
 
 MediaPipe is configured with:
-- **Pose**: `static_image_mode=True`, `model_complexity=2` (high accuracy)
-- **Face Mesh**: `max_num_faces=1`, `refine_landmarks=True`
+- **Pose Landmarker**: Heavy model for high accuracy, running in IMAGE mode
+- **Face Landmarker**: Face mesh with refined landmarks
+- Models are automatically downloaded from Google Cloud Storage on first use
 
 ## License
 

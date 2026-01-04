@@ -6,8 +6,12 @@ Analyzes skin tone undertones for fashion color recommendations
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from sklearn.cluster import KMeans
 from typing import Dict, Optional, Tuple, Any
+import urllib.request
+import os
 
 
 class SkinToneAnalyzer:
@@ -16,15 +20,34 @@ class SkinToneAnalyzer:
     for fashion color recommendations.
     """
     
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+    MODEL_PATH = "models/face_landmarker.task"
+    
     def __init__(self) -> None:
         """Initialize MediaPipe Face Mesh for face segmentation."""
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
+        # Download model if not exists
+        self._ensure_model_downloaded()
+        
+        base_options = python.BaseOptions(model_asset_path=self.MODEL_PATH)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.2,
+            min_face_presence_confidence=0.2,
+            min_tracking_confidence=0.5,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False
         )
+        self.face_mesh = vision.FaceLandmarker.create_from_options(options)
+    
+    def _ensure_model_downloaded(self) -> None:
+        """Download the face landmarker model if it doesn't exist."""
+        if not os.path.exists(self.MODEL_PATH):
+            os.makedirs(os.path.dirname(self.MODEL_PATH) or "models", exist_ok=True)
+            print(f"Downloading face detection model...")
+            urllib.request.urlretrieve(self.MODEL_URL, self.MODEL_PATH)
+            print(f"Model downloaded to {self.MODEL_PATH}")
         
         # Define landmark indices to exclude (eyes and lips)
         # Eyes: indices around the eye regions
@@ -59,7 +82,7 @@ class SkinToneAnalyzer:
         Create a binary mask for the face, excluding eyes and lips.
         
         Args:
-            landmarks: MediaPipe face mesh landmarks
+            landmarks: MediaPipe face mesh landmarks (list of NormalizedLandmark)
             image_shape: Shape of the input image (height, width, channels)
             
         Returns:
@@ -70,7 +93,7 @@ class SkinToneAnalyzer:
         
         # Get all face landmark points
         face_points = []
-        for idx, landmark in enumerate(landmarks.landmark):
+        for idx, landmark in enumerate(landmarks):
             # Skip eye and lip landmarks
             if idx in self.eye_indices or idx in self.lip_indices:
                 continue
@@ -87,12 +110,13 @@ class SkinToneAnalyzer:
             
             # Additionally exclude specific eye and lip regions with circular masks
             for idx in self.eye_indices | self.lip_indices:
-                if idx < len(landmarks.landmark):
-                    landmark = landmarks.landmark[idx]
+                if idx < len(landmarks):
+                    landmark = landmarks[idx]
                     x = int(landmark.x * width)
                     y = int(landmark.y * height)
-                    # Draw a small circle to exclude this area
-                    cv2.circle(mask, (x, y), 5, 0, -1)
+                    # Draw a small circle to exclude this area (dynamic radius for different image sizes)
+                    radius = max(1, int(width * 0.005))
+                    cv2.circle(mask, (x, y), radius, 0, -1)
         
         return mask
     
@@ -153,20 +177,21 @@ class SkinToneAnalyzer:
     def _classify_undertone(
         self, 
         lab_color: np.ndarray, 
-        threshold: float = 0.0
+        threshold: float = 128.0
     ) -> str:
         """
         Classify skin undertone as Warm or Cool based on LAB b-channel.
         
         Args:
             lab_color: Color in LAB format [L, A, B]
-            threshold: Threshold for classification (default: 0.0)
+            threshold: Threshold for classification (default: 128.0)
             
         Returns:
             "Warm" or "Cool" classification
         """
         # In LAB color space:
-        # b channel: negative = blue (cool), positive = yellow (warm)
+        # OpenCV offsets LAB channels: L=[0,255], A=[0,255], B=[0,255]
+        # Neutral point is 128. B > 128 = yellow (warm), B < 128 = blue (cool)
         b_channel = lab_color[2]
         
         if b_channel > threshold:
@@ -192,14 +217,17 @@ class SkinToneAnalyzer:
         # Convert BGR to RGB for MediaPipe
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Process the image
-        results = self.face_mesh.process(image_rgb)
+        # Create MediaPipe Image object
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         
-        if not results.multi_face_landmarks:
+        # Process the image
+        results = self.face_mesh.detect(mp_image)
+        
+        if not results.face_landmarks or len(results.face_landmarks) == 0:
             return None
         
         # Use the first detected face
-        face_landmarks = results.multi_face_landmarks[0]
+        face_landmarks = results.face_landmarks[0]
         
         # Create face mask excluding eyes and lips
         mask = self._create_face_mask(face_landmarks, image.shape)

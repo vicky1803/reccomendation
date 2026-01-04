@@ -13,7 +13,7 @@ class BodyShapeClassifier:
     """
     
     # Classification thresholds (fashion industry standards)
-    RATIO_THRESHOLD_HIGH = 1.05  # Shoulders significantly wider than hips
+    RATIO_THRESHOLD_HIGH = 1.20  # Shoulders significantly wider than hips
     RATIO_THRESHOLD_LOW = 0.95   # Hips significantly wider than shoulders
     WAIST_DEFINITION_THRESHOLD = 0.20  # 20% difference for rectangle classification
     HOURGLASS_WAIST_RATIO = 0.80  # Waist must be < 80% of hips for hourglass

@@ -6,7 +6,11 @@ Extracts body measurements for fashion body shape analysis
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from typing import Dict, List, Optional, Tuple, Any
+import urllib.request
+import os
 
 
 class PoseExtractor:
@@ -15,15 +19,32 @@ class PoseExtractor:
     (shoulder width, hip width, waist width) from input images.
     """
     
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+    MODEL_PATH = "models/pose_landmarker_heavy.task"
+    
     def __init__(self) -> None:
         """Initialize MediaPipe Pose with high accuracy settings."""
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=True,
-            model_complexity=2,  # High accuracy model
-            enable_segmentation=False,
-            min_detection_confidence=0.5
+        # Download model if not exists
+        self._ensure_model_downloaded()
+        
+        base_options = python.BaseOptions(model_asset_path=self.MODEL_PATH)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5
         )
+        self.pose = vision.PoseLandmarker.create_from_options(options)
+    
+    def _ensure_model_downloaded(self) -> None:
+        """Download the pose landmarker model if it doesn't exist."""
+        if not os.path.exists(self.MODEL_PATH):
+            os.makedirs(os.path.dirname(self.MODEL_PATH) or "models", exist_ok=True)
+            print(f"Downloading pose detection model...")
+            urllib.request.urlretrieve(self.MODEL_URL, self.MODEL_PATH)
+            print(f"Model downloaded to {self.MODEL_PATH}")
     
     def __del__(self) -> None:
         """Clean up MediaPipe resources."""
@@ -105,6 +126,10 @@ class PoseExtractor:
         # Convert to pixels
         waist_width_px = waist_width_normalized * image_width
         
+        # Apply same 1.10 inflation factor as hips for consistency
+        # (accounts for flesh and clothing volume)
+        waist_width_px = waist_width_px * 1.10
+        
         return waist_width_px
     
     def extract_metrics(self, image: np.ndarray) -> Optional[Dict[str, Any]]:
@@ -131,21 +156,25 @@ class PoseExtractor:
         # Get image dimensions
         image_height, image_width = image.shape[:2]
         
-        # Process the image
-        results = self.pose.process(image_rgb)
+        # Create MediaPipe Image object
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         
-        if not results.pose_landmarks:
+        # Process the image
+        results = self.pose.detect(mp_image)
+        
+        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
             return None
         
-        landmarks = results.pose_landmarks
+        # Get the first pose's landmarks
+        landmarks_list = results.pose_landmarks[0]
         
         # Extract key landmark indices
         # Shoulders: 11 (Left), 12 (Right)
         # Hips: 23 (Left), 24 (Right)
-        left_shoulder = landmarks.landmark[11]
-        right_shoulder = landmarks.landmark[12]
-        left_hip = landmarks.landmark[23]
-        right_hip = landmarks.landmark[24]
+        left_shoulder = landmarks_list[11]
+        right_shoulder = landmarks_list[12]
+        left_hip = landmarks_list[23]
+        right_hip = landmarks_list[24]
         
         # Convert normalized coordinates to pixel coordinates
         left_shoulder_px = (left_shoulder.x * image_width, left_shoulder.y * image_height)
@@ -162,15 +191,25 @@ class PoseExtractor:
             left_hip_px, 
             right_hip_px
         )
+        # MediaPipe detects skeletal joints, not outer body silhouette
+        # Apply 10% inflation to account for flesh and clothing volume
+        hip_width = hip_width * 1.10
         
         # Calculate waist position
         shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2
         hip_center_y = (left_hip.y + right_hip.y) / 2
         waist_y_normalized = self._estimate_waist_position(shoulder_center_y, hip_center_y)
         
+        # Create a simple object to hold landmarks for the helper function
+        class LandmarksWrapper:
+            def __init__(self, lm_list):
+                self.landmark = lm_list
+        
+        landmarks_wrapper = LandmarksWrapper(landmarks_list)
+        
         # Estimate waist width
         waist_width = self._estimate_waist_width(
-            landmarks,
+            landmarks_wrapper,
             waist_y_normalized,
             image_width,
             image_height
@@ -187,21 +226,21 @@ class PoseExtractor:
         right_waist_px = (waist_x_px + waist_half_width, waist_y_px)
         
         # Convert landmarks to list format
-        landmarks_list = [
+        landmarks_output = [
             {
                 'x': lm.x,
                 'y': lm.y,
                 'z': lm.z,
-                'visibility': lm.visibility
+                'visibility': lm.visibility if hasattr(lm, 'visibility') else 1.0
             }
-            for lm in landmarks.landmark
+            for lm in landmarks_list
         ]
         
         return {
             'shoulder_px': float(shoulder_width),
             'hip_px': float(hip_width),
             'waist_px': float(waist_width),
-            'landmarks': landmarks_list,
+            'landmarks': landmarks_output,
             'shoulder_coords': {
                 'left': left_shoulder_px,
                 'right': right_shoulder_px
